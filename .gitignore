@@ -1,0 +1,152 @@
+# ================================
+# Unity generated folders
+# ================================
+
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+
+# MemoryCaptures
+[Mm]emoryCaptures/
+
+# Asset Store tools
+[Aa]ssets/AssetStoreTools*
+
+# Auto-generated StreamingAssets
+# [Aa]ssets/StreamingAssets/
+
+
+# ================================
+# Unity cache / generated files
+# ================================
+
+*.pidb
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Unity crash reports
+sysinfo.txt
+
+
+# ================================
+# Visual Studio / Rider
+# ================================
+
+.vs/
+.idea/
+.gradle/
+
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.unityproj
+
+# Rider generated
+*.DotSettings.user
+
+# Visual Studio Code
+.vscode/
+
+
+# ================================
+# OS generated files
+# ================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Windows image file caches
+Thumbs.db:encryptable
+
+# Linux
+*~
+
+
+# ================================
+# Build artifacts
+# ================================
+
+*.apk
+*.aab
+*.unitypackage
+*.app
+*.ipa
+
+# Android
+.gradle/
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+xcuserdata/
+
+
+# ================================
+# Addressables
+# ================================
+
+/[Aa]ssets/[Aa]ddressable[Aa]ssets[Dd]ata/*
+
+
+# ================================
+# Burst generated files
+# ================================
+
+/[Aa]ssets/[Bb]urst[Dd]ebugInformation_DoNotShip/
+
+
+# ================================
+# Package Manager
+# ================================
+
+# Don't ignore Packages/!
+# Packages/manifest.json
+# Packages/packages-lock.json
+# should be committed.
+
+
+# ================================
+# Generated project files
+# ================================
+
+/[Aa]ssets/[Tt]ests/[Gg]enerated/
+/[Aa]ssets/[Tt]est[Rr]esults/
+
+# UI Builder generated files
+/[Aa]ssets/[Uu]i[Bb]uilder/
+
+
+# ================================
+# Temporary / backup files
+# ================================
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Unity backup files
+*.pidb.meta
+*.pdb.meta
