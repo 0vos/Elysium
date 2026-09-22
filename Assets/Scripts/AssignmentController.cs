@@ -233,7 +233,9 @@ public class AssignmentController : MonoBehaviour
 
         if (TryRaycastPlane(pos, out Pose pose))
         {
-            target.transform.position = pose.position;
+            Vector3 placePos = pose.position;
+            placePos.y += HalfHeight(target); // 让物体底部贴平面，而不是中心陷进去
+            target.transform.position = placePos;
             target.transform.rotation = FaceUser(pose.rotation);
         }
         else
@@ -284,6 +286,12 @@ public class AssignmentController : MonoBehaviour
         return fallback;
     }
 
+    float HalfHeight(GameObject go)
+    {
+        // CreatePrimitive 默认尺寸为 1 单位，模型本地半高 = scale.y / 2
+        return go.transform.localScale.y * 0.5f;
+    }
+
     // ============ 拾取与移动 ============
     GameObject PickObject(Vector2 pos)
     {
@@ -303,7 +311,9 @@ public class AssignmentController : MonoBehaviour
 
         if (TryRaycastPlane(pos, out Pose pose))
         {
-            m_Selected.transform.position = pose.position;
+            Vector3 p = pose.position;
+            p.y += HalfHeight(m_Selected); // 拖动时也保持底部贴平面
+            m_Selected.transform.position = p;
         }
         else if (m_Camera != null)
         {
