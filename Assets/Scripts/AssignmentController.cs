@@ -1,21 +1,26 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.EnhancedTouch;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using Touch = UnityEngine.InputSystem.EnhancedTouch.Touch;
+using InputTouchPhase = UnityEngine.InputSystem.TouchPhase;
 
 /// <summary>
 /// 《虚拟现实技术》课程作业的独立 AR 交互控制器。
 ///
-/// 完成两项要求：
-///   1. 放置 1 个模型，利用手势（拖动/缩放/旋转，编辑器内可用鼠标）做交互操作；
-///   2. 放置 2 个模型，利用交互把它们相互靠近，触发碰撞检测并给出反馈。
+/// 交互方式（保留模板风格的“点击平面放置 + 手势控制”，但只有一个模型选择按钮）：
+///   - 点击检测到的平面 → 放置当前选中的模型（立方体 / 球体）。
+///   - 点击已放置的模型 → 选中并拖动移动。
+///   - 双指捏合缩放、双指旋转。
+///   - 两个模型相互靠近时触发碰撞检测（变绿 + 提示）。
 ///
-/// The runtime UI is deliberately self-contained: it does not depend on or expose
-/// any starter-scene controls. Labels use ASCII so they render on Android/iOS even
-/// when a device does not provide a Chinese system font.
+/// 输入使用新的 Input System（EnhancedTouch + Mouse），因为本工程
+/// activeInputHandler = Input System（纯新输入系统），旧的 Input.touch 等
+/// API 不会收到任何事件。
 ///
-/// 本脚本通过 [RuntimeInitializeOnLoadMethod] 在运行时自动挂载，
-/// 无需在场景里手动添加 GameObject。
+/// 通过 [RuntimeInitializeOnLoadMethod] 运行时自动挂载，无需在场景里手动添加。
 /// </summary>
 public class AssignmentController : MonoBehaviour
 {
@@ -34,11 +39,12 @@ public class AssignmentController : MonoBehaviour
     static readonly Color kSphereColor = new Color(0.26f, 0.52f, 0.94f);
     static readonly Color kHitColor = new Color(0.2f, 0.85f, 0.35f);
 
-    // ============ 交互状态 ============
-    enum AppMode { PlaceCube, PlaceSphere, Interact }
-    AppMode m_Mode = AppMode.PlaceCube;
+    // ============ 模型选择 ============
+    enum ModelType { Cube, Sphere }
+    ModelType m_CurrentModel = ModelType.Cube;
 
-    GameObject m_Selected;   // 当前选中的模型
+    // ============ 交互状态 ============
+    GameObject m_Selected;   // 当前选中/拖动中的模型
     bool m_Dragging;
 
     // 双指手势（缩放 + 旋转）
@@ -52,30 +58,30 @@ public class AssignmentController : MonoBehaviour
     bool m_WasColliding;
 
     // ============ 状态提示 ============
-    string m_Status = "Scan a surface, then tap to place an object.";
+    string m_Status = "Scan a surface, then tap it to place an object.";
     float m_StatusUntil;
 
     static readonly List<ARRaycastHit> s_Hits = new List<ARRaycastHit>();
 
-    // IMGUI invokes OnGUI several times per frame. Cache styles rather than
-    // allocating them on every layout and repaint event.
     GUIStyle m_StatusStyle;
     GUIStyle m_ButtonStyle;
-    GUIStyle m_ModeStyle;
+    GUIStyle m_HintStyle;
 
     // ============ 自动启动 ============
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Bootstrap()
     {
-        // The Assignment scene contains only the independent course UI. Avoid
-        // scanning and changing every inactive scene object during app launch:
-        // on a phone this can delay AR session startup, and it can accidentally
-        // disable objects required by input or plane raycasts.
         if (FindFirstObjectByType<AssignmentController>() != null) return;
 
         var host = new GameObject("Course AR Controller");
         host.AddComponent<AssignmentController>();
         DontDestroyOnLoad(host);
+    }
+
+    void OnEnable()
+    {
+        // 启用增强触摸（新输入系统）
+        EnhancedTouchSupport.Enable();
     }
 
     void Start()
@@ -97,7 +103,7 @@ public class AssignmentController : MonoBehaviour
         {
             m_Cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
             m_Cube.name = "CubeModel";
-            m_Cube.transform.localScale = Vector3.one * 0.12f;
+            m_Cube.transform.localScale = Vector3.one * 0.15f;
             m_CubeMaterial = MakeColoredMaterial(kCubeColor);
             m_Cube.GetComponent<Renderer>().sharedMaterial = m_CubeMaterial;
             m_Cube.SetActive(false);
@@ -107,7 +113,7 @@ public class AssignmentController : MonoBehaviour
         {
             m_Sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             m_Sphere.name = "SphereModel";
-            m_Sphere.transform.localScale = Vector3.one * 0.12f;
+            m_Sphere.transform.localScale = Vector3.one * 0.15f;
             m_SphereMaterial = MakeColoredMaterial(kSphereColor);
             m_Sphere.GetComponent<Renderer>().sharedMaterial = m_SphereMaterial;
             m_Sphere.SetActive(false);
@@ -122,9 +128,7 @@ public class AssignmentController : MonoBehaviour
         if (shader == null) shader = Shader.Find("Sprites/Default");
 
         var mat = new Material(shader);
-        mat.color = color;                     // 兼容大多数着色器
-        mat.SetColor("_BaseColor", color);     // URP Lit / Unlit
-        mat.SetColor("_Color", color);
+        SetMaterialColor(mat, color);
         return mat;
     }
 
@@ -139,11 +143,18 @@ public class AssignmentController : MonoBehaviour
     void Update()
     {
         DetectCollision();
+        UpdateInput();
+    }
 
-        // 双指手势：缩放 + 旋转
-        if (Input.touchCount == 2)
+    // ============ 输入（新 Input System） ============
+    void UpdateInput()
+    {
+        var touches = Touch.activeTouches;
+
+        // 双指：缩放 + 旋转
+        if (touches.Count >= 2)
         {
-            HandleTwoFinger();
+            HandleTwoFinger(touches[0], touches[1]);
             return;
         }
         else if (m_TwoFinger)
@@ -154,51 +165,60 @@ public class AssignmentController : MonoBehaviour
         }
 
         // 单指触摸
-        if (Input.touchCount == 1)
+        if (touches.Count == 1)
         {
-            Touch t = Input.GetTouch(0);
-            bool began = t.phase == TouchPhase.Began;
-            bool held = t.phase == TouchPhase.Moved || t.phase == TouchPhase.Stationary;
-            bool ended = t.phase == TouchPhase.Ended || t.phase == TouchPhase.Canceled;
-            HandlePointer(t.position, began, held, ended);
+            HandleSingleTouch(touches[0]);
             return;
         }
 
-        // 鼠标（编辑器）
-        bool mbDown = Input.GetMouseButtonDown(0);
-        bool mb = Input.GetMouseButton(0);
-        bool mbUp = Input.GetMouseButtonUp(0);
-        if (mbDown || mb || mbUp)
-            HandlePointer(Input.mousePosition, mbDown, mb, mbUp);
+        // 鼠标（编辑器，无触摸设备）
+        var mouse = Mouse.current;
+        if (mouse != null)
+        {
+            bool down = mouse.leftButton.wasPressedThisFrame;
+            bool held = mouse.leftButton.isPressed;
+            bool up = mouse.leftButton.wasReleasedThisFrame;
+            if (down || held || up)
+                HandlePointer(mouse.position.ReadValue(), down, held, up);
+        }
     }
 
+    void HandleSingleTouch(Touch t)
+    {
+        Vector2 pos = t.screenPosition;
+        bool began = t.phase == InputTouchPhase.Began;
+        bool held = t.phase == InputTouchPhase.Moved || t.phase == InputTouchPhase.Stationary;
+        bool ended = t.phase == InputTouchPhase.Ended || t.phase == InputTouchPhase.Canceled;
+
+        // 点在 UI 按钮区域时不当作场景交互（避免点按钮时误触放置）
+        if (began && IsOverButton(pos)) return;
+
+        HandlePointer(pos, began, held, ended);
+    }
+
+    // ============ 指针交互（自然模式） ============
     void HandlePointer(Vector2 pos, bool began, bool held, bool ended)
     {
-        if (m_Mode != AppMode.Interact)
-        {
-            if (began) PlaceObject(pos);
-            return;
-        }
-
-        // 自由交互模式
         if (began)
         {
-            m_Selected = PickObject(pos);
-            if (m_Selected != null)
+            // 先看是否点在已放置的模型上：是 → 选中并拖动
+            GameObject hit = PickObject(pos);
+            if (hit != null)
             {
+                m_Selected = hit;
                 m_Dragging = true;
-                SetStatus("Object selected: drag to move; pinch or twist to transform.");
+                SetStatus("Object selected. Drag to move, pinch to scale, twist to rotate.");
+                return;
             }
-            else
-            {
-                m_Selected = null;
-            }
+
+            // 否则点平面放置当前模型
+            PlaceObject(pos);
         }
         else if (held && m_Selected != null)
         {
             MoveSelected(pos);
         }
-        else if (ended && m_Selected != null)
+        else if (ended)
         {
             m_Selected = null;
             m_Dragging = false;
@@ -208,22 +228,23 @@ public class AssignmentController : MonoBehaviour
     // ============ 放置模型 ============
     void PlaceObject(Vector2 pos)
     {
-        GameObject target = m_Mode == AppMode.PlaceCube ? m_Cube : m_Sphere;
-        if (target == null) { CreateModels(); target = m_Mode == AppMode.PlaceCube ? m_Cube : m_Sphere; }
+        GameObject target = m_CurrentModel == ModelType.Cube ? m_Cube : m_Sphere;
+        if (target == null) { CreateModels(); target = m_CurrentModel == ModelType.Cube ? m_Cube : m_Sphere; }
 
-        bool hitPlane = TryRaycastPlane(pos, out Pose pose);
-
-        if (hitPlane)
+        if (TryRaycastPlane(pos, out Pose pose))
         {
             target.transform.position = pose.position;
             target.transform.rotation = FaceUser(pose.rotation);
         }
-        else PlaceInFrontOfCamera(target);
+        else
+        {
+            PlaceInFrontOfCamera(target);
+        }
 
         target.SetActive(true);
 
-        string name = m_Mode == AppMode.PlaceCube ? "cube" : "sphere";
-        SetStatus("Placed " + name + ". Place the other object, then choose INTERACT.");
+        string name = m_CurrentModel == ModelType.Cube ? "cube" : "sphere";
+        SetStatus("Placed a " + name + ". Tap empty ground to place another.");
     }
 
     bool TryRaycastPlane(Vector2 screenPosition, out Pose pose)
@@ -232,7 +253,6 @@ public class AssignmentController : MonoBehaviour
         if (m_RaycastManager == null) return false;
 
         s_Hits.Clear();
-        // WithinBounds keeps placement responsive at the edge of a detected plane.
         if (!m_RaycastManager.Raycast(screenPosition, s_Hits,
                 TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds))
             return false;
@@ -281,9 +301,7 @@ public class AssignmentController : MonoBehaviour
     {
         if (m_Selected == null) return;
 
-        bool hitPlane = TryRaycastPlane(pos, out Pose pose);
-
-        if (hitPlane)
+        if (TryRaycastPlane(pos, out Pose pose))
         {
             m_Selected.transform.position = pose.position;
         }
@@ -297,12 +315,10 @@ public class AssignmentController : MonoBehaviour
     }
 
     // ============ 双指：缩放 + 旋转 ============
-    void HandleTwoFinger()
+    void HandleTwoFinger(Touch t0, Touch t1)
     {
-        Touch t0 = Input.GetTouch(0);
-        Touch t1 = Input.GetTouch(1);
-        Vector2 p0 = t0.position;
-        Vector2 p1 = t1.position;
+        Vector2 p0 = t0.screenPosition;
+        Vector2 p1 = t1.screenPosition;
         Vector2 dir = p1 - p0;
         float dist = dir.magnitude;
 
@@ -335,7 +351,7 @@ public class AssignmentController : MonoBehaviour
         m_Selected.transform.rotation = m_TwistStartRot * Quaternion.Euler(0f, delta, 0f);
     }
 
-    // ============ 碰撞检测（基于碰撞体的包围盒相交） ============
+    // ============ 碰撞检测（基于碰撞体包围盒相交） ============
     void DetectCollision()
     {
         if (m_Cube == null || m_Sphere == null) return;
@@ -346,40 +362,34 @@ public class AssignmentController : MonoBehaviour
         if (cb == null || sb == null) return;
 
         Bounds a = cb.bounds;
-        a.Expand(0.01f); // 1cm 容差，便于实际操作
+        a.Expand(0.01f); // 1cm 容差
 
         bool now = a.Intersects(sb.bounds);
 
         if (now && !m_WasColliding)
         {
-            // 碰撞发生
             SetMaterialColor(m_CubeMaterial, kHitColor);
             SetMaterialColor(m_SphereMaterial, kHitColor);
             SetStatus("Collision detected! Both objects are highlighted green.");
         }
         else if (!now && m_WasColliding)
         {
-            // 碰撞解除
             SetMaterialColor(m_CubeMaterial, kCubeColor);
             SetMaterialColor(m_SphereMaterial, kSphereColor);
-            SetStatus("Objects separated. Move them together to detect another collision.");
+            SetStatus("Objects separated. Move them together to collide again.");
         }
 
         m_WasColliding = now;
     }
 
-    // ============ 模式切换 ============
-    void SetMode(AppMode mode)
+    // ============ 模型选择 ============
+    void SwitchModel()
     {
-        m_Mode = mode;
+        m_CurrentModel = m_CurrentModel == ModelType.Cube ? ModelType.Sphere : ModelType.Cube;
         m_Selected = null;
         m_Dragging = false;
-        switch (mode)
-        {
-            case AppMode.PlaceCube: SetStatus("PLACE CUBE: tap a detected surface."); break;
-            case AppMode.PlaceSphere: SetStatus("PLACE SPHERE: tap a detected surface."); break;
-            case AppMode.Interact: SetStatus("INTERACT: drag to move; pinch/twist to transform."); break;
-        }
+        string name = m_CurrentModel == ModelType.Cube ? "cube" : "sphere";
+        SetStatus("Will place a " + name + ". Tap a surface to place it.");
     }
 
     void SetStatus(string text)
@@ -388,11 +398,32 @@ public class AssignmentController : MonoBehaviour
         m_StatusUntil = Time.time + 5f;
     }
 
-    // ============ 屏幕 UI ============
+    // ============ 屏幕 UI（OnGUI，一个模型选择按钮） ============
+    float Scale()
+    {
+        return Mathf.Clamp(Screen.height / 1200f, 0.75f, 1.6f);
+    }
+
+    Rect ModelButtonRect(float s)
+    {
+        int bw = Mathf.RoundToInt(240 * s);
+        int bh = Mathf.RoundToInt(64 * s);
+        int x = (Screen.width - bw) / 2;
+        int y = Screen.height - bh - Mathf.RoundToInt(30 * s);
+        return new Rect(x, y, bw, bh);
+    }
+
+    bool IsOverButton(Vector2 screenPos)
+    {
+        // GUI 坐标原点在左上角，输入坐标原点在左下角，需翻转 Y
+        Vector2 guiPos = new Vector2(screenPos.x, Screen.height - screenPos.y);
+        return ModelButtonRect(Scale()).Contains(guiPos);
+    }
+
     void OnGUI()
     {
-        float s = Mathf.Clamp(Screen.height / 1200f, 0.75f, 1.6f);
-        EnsureGuiStyles(s);
+        float s = Scale();
+        EnsureStyles(s);
 
         // 顶部状态栏（半透明底）
         GUI.color = new Color(0f, 0f, 0f, 0.5f);
@@ -400,55 +431,32 @@ public class AssignmentController : MonoBehaviour
         GUI.color = Color.white;
         GUI.Label(new Rect(10, 10, Screen.width - 20, Mathf.RoundToInt(50 * s)), m_Status, m_StatusStyle);
 
-        // 底部模式按钮
-        int bw = Mathf.RoundToInt(190 * s);
-        int bh = Mathf.RoundToInt(64 * s);
-        int gap = Mathf.RoundToInt(12 * s);
-        int y = Screen.height - bh - Mathf.RoundToInt(24 * s);
+        // 一个模型选择按钮（居中）
+        Rect btn = ModelButtonRect(s);
+        string label = m_CurrentModel == ModelType.Cube ? "MODEL: CUBE" : "MODEL: SPHERE";
+        if (GUI.Button(btn, label, m_ButtonStyle))
+            SwitchModel();
 
-        int x = Mathf.RoundToInt(12 * s);
-        DrawModeButton(new Rect(x, y, bw, bh), "PLACE CUBE", AppMode.PlaceCube, m_ButtonStyle);
-        x += bw + gap;
-        DrawModeButton(new Rect(x, y, bw, bh), "PLACE SPHERE", AppMode.PlaceSphere, m_ButtonStyle);
-        x += bw + gap;
-        DrawModeButton(new Rect(x, y, bw, bh), "INTERACT", AppMode.Interact, m_ButtonStyle);
-
-        // 当前模式高亮
-        GUI.Label(new Rect(Mathf.RoundToInt(12 * s), y - Mathf.RoundToInt(34 * s), Screen.width, Mathf.RoundToInt(28 * s)),
-            "MODE: " + ModeName(), m_ModeStyle);
+        // 底部操作提示
+        GUI.Label(new Rect(10, btn.y - Mathf.RoundToInt(34 * s), Screen.width, Mathf.RoundToInt(28 * s)),
+            "Tap surface: place    Tap object: drag    Pinch/twist: scale/rotate", m_HintStyle);
     }
 
-    void EnsureGuiStyles(float screenScale)
+    void EnsureStyles(float screenScale)
     {
         if (m_StatusStyle == null)
         {
             m_StatusStyle = new GUIStyle(GUI.skin.label);
             m_ButtonStyle = new GUIStyle(GUI.skin.button);
-            m_ModeStyle = new GUIStyle(GUI.skin.label);
+            m_HintStyle = new GUIStyle(GUI.skin.label);
             m_StatusStyle.normal.textColor = Color.white;
-            m_ModeStyle.normal.textColor = Color.yellow;
+            m_HintStyle.normal.textColor = Color.yellow;
+            m_StatusStyle.alignment = TextAnchor.MiddleLeft;
+            m_HintStyle.alignment = TextAnchor.MiddleCenter;
         }
 
-        m_StatusStyle.fontSize = Mathf.RoundToInt(24 * screenScale);
-        m_ButtonStyle.fontSize = Mathf.RoundToInt(24 * screenScale);
-        m_ModeStyle.fontSize = Mathf.RoundToInt(20 * screenScale);
-    }
-
-    void DrawModeButton(Rect r, string label, AppMode mode, GUIStyle style)
-    {
-        GUI.color = (m_Mode == mode) ? Color.green : Color.white;
-        if (GUI.Button(r, label, style))
-            SetMode(mode);
-        GUI.color = Color.white;
-    }
-
-    string ModeName()
-    {
-        switch (m_Mode)
-        {
-            case AppMode.PlaceCube: return "PLACE CUBE";
-            case AppMode.PlaceSphere: return "PLACE SPHERE";
-            default: return "INTERACT";
-        }
+        m_StatusStyle.fontSize = Mathf.RoundToInt(22 * screenScale);
+        m_ButtonStyle.fontSize = Mathf.RoundToInt(26 * screenScale);
+        m_HintStyle.fontSize = Mathf.RoundToInt(18 * screenScale);
     }
 }
