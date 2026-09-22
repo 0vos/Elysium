@@ -4,18 +4,15 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
 /// <summary>
-/// 《虚拟现实技术》课程作业 —— 基于 AR Mobile 模板改写。
+/// 《虚拟现实技术》课程作业的独立 AR 交互控制器。
 ///
 /// 完成两项要求：
 ///   1. 放置 1 个模型，利用手势（拖动/缩放/旋转，编辑器内可用鼠标）做交互操作；
 ///   2. 放置 2 个模型，利用交互把它们相互靠近，触发碰撞检测并给出反馈。
 ///
-/// 使用说明：
-///   - 下方三个按钮切换模式：放置立方体 / 放置球体 / 自由交互。
-///   - 放置模式：轻点屏幕（或点击鼠标）把对应模型放到检测到的平面上；
-///     若还没有检测到平面，会放到相机前方 0.5 米处。
-///   - 自由交互模式：单指拖拽移动模型；双指捏合缩放、双指旋转。
-///   - 当立方体与球体发生碰撞时，两者变绿并提示“碰撞检测成功”。
+/// The runtime UI is deliberately self-contained: it does not depend on or expose
+/// any starter-scene controls. Labels use ASCII so they render on Android/iOS even
+/// when a device does not provide a Chinese system font.
 ///
 /// 本脚本通过 [RuntimeInitializeOnLoadMethod] 在运行时自动挂载，
 /// 无需在场景里手动添加 GameObject。
@@ -55,57 +52,28 @@ public class AssignmentController : MonoBehaviour
     bool m_WasColliding;
 
     // ============ 状态提示 ============
-    string m_Status = "请先扫描地面，然后点下方按钮放置模型";
+    string m_Status = "Scan a surface, then tap to place an object.";
     float m_StatusUntil;
 
     static readonly List<ARRaycastHit> s_Hits = new List<ARRaycastHit>();
 
-    // ---------- 中文字体（运行时从系统加载，失败则退回默认字体） ----------
-    static Font s_UIFont;
-    static bool s_FontTried;
-
-    static Font GetUIFont()
-    {
-        if (!s_FontTried)
-        {
-            s_FontTried = true;
-            string[] candidates =
-            {
-                "PingFang SC", "Heiti SC", "STHeiti", "Hiragino Sans GB",
-                "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC",
-            };
-            foreach (var name in candidates)
-            {
-                try
-                {
-                    var f = Font.CreateDynamicFontFromOSFont(name, 24);
-                    if (f != null) { s_UIFont = f; break; }
-                }
-                catch { /* 忽略并尝试下一个字体 */ }
-            }
-        }
-        return s_UIFont;
-    }
+    // IMGUI invokes OnGUI several times per frame. Cache styles rather than
+    // allocating them on every layout and repaint event.
+    GUIStyle m_StatusStyle;
+    GUIStyle m_ButtonStyle;
+    GUIStyle m_ModeStyle;
 
     // ============ 自动启动 ============
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Bootstrap()
     {
-        // 防御性清理：若场景里还残留模板的示例 UI / 生成器，一并关掉。
-        var all = FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-        foreach (var go in all)
-        {
-            if (go == null) continue;
-            string n = go.name;
-            if (n == "UI" || n == "Object Spawner" || n == "GreetingCTA" ||
-                n == "Coaching UI" || n.Contains("Prompt") || n.Contains("Menu") ||
-                n.Contains("Debug"))
-            {
-                go.SetActive(false);
-            }
-        }
+        // The Assignment scene contains only the independent course UI. Avoid
+        // scanning and changing every inactive scene object during app launch:
+        // on a phone this can delay AR session startup, and it can accidentally
+        // disable objects required by input or plane raycasts.
+        if (FindFirstObjectByType<AssignmentController>() != null) return;
 
-        var host = new GameObject("AssignmentController");
+        var host = new GameObject("Course AR Controller");
         host.AddComponent<AssignmentController>();
         DontDestroyOnLoad(host);
     }
@@ -118,7 +86,7 @@ public class AssignmentController : MonoBehaviour
         m_PlaneManager = FindFirstObjectByType<ARPlaneManager>();
 
         if (m_RaycastManager == null)
-            Debug.LogWarning("[Assignment] 未找到 ARRaycastManager，请确认场景中存在 XR Origin (AR Rig)。");
+            Debug.LogWarning("[Course AR] ARRaycastManager is missing; placement will use the camera fallback.");
 
         CreateModels();
     }
@@ -158,6 +126,14 @@ public class AssignmentController : MonoBehaviour
         mat.SetColor("_BaseColor", color);     // URP Lit / Unlit
         mat.SetColor("_Color", color);
         return mat;
+    }
+
+    static void SetMaterialColor(Material material, Color color)
+    {
+        if (material == null) return;
+        material.color = color;
+        if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
+        if (material.HasProperty("_Color")) material.SetColor("_Color", color);
     }
 
     void Update()
@@ -211,7 +187,7 @@ public class AssignmentController : MonoBehaviour
             if (m_Selected != null)
             {
                 m_Dragging = true;
-                SetStatus("已选中模型：拖动移动，双指缩放/旋转");
+                SetStatus("Object selected: drag to move; pinch or twist to transform.");
             }
             else
             {
@@ -235,25 +211,47 @@ public class AssignmentController : MonoBehaviour
         GameObject target = m_Mode == AppMode.PlaceCube ? m_Cube : m_Sphere;
         if (target == null) { CreateModels(); target = m_Mode == AppMode.PlaceCube ? m_Cube : m_Sphere; }
 
-        bool hitPlane = m_RaycastManager != null
-            && m_RaycastManager.Raycast(pos, s_Hits, TrackableType.PlaneWithinPolygon);
+        bool hitPlane = TryRaycastPlane(pos, out Pose pose);
 
         if (hitPlane)
         {
-            Pose p = s_Hits[0].pose;
-            target.transform.position = p.position;
-            target.transform.rotation = FaceUser(p.rotation);
+            target.transform.position = pose.position;
+            target.transform.rotation = FaceUser(pose.rotation);
         }
-        else if (m_Camera != null)
-        {
-            target.transform.position = m_Camera.transform.position + m_Camera.transform.forward * 0.5f;
-            target.transform.rotation = FaceUser(Quaternion.identity);
-        }
+        else PlaceInFrontOfCamera(target);
 
         target.SetActive(true);
 
-        string name = m_Mode == AppMode.PlaceCube ? "立方体" : "球体";
-        SetStatus("已放置" + name + "，可继续放置或切换到交互模式");
+        string name = m_Mode == AppMode.PlaceCube ? "cube" : "sphere";
+        SetStatus("Placed " + name + ". Place the other object, then choose INTERACT.");
+    }
+
+    bool TryRaycastPlane(Vector2 screenPosition, out Pose pose)
+    {
+        pose = default;
+        if (m_RaycastManager == null) return false;
+
+        s_Hits.Clear();
+        // WithinBounds keeps placement responsive at the edge of a detected plane.
+        if (!m_RaycastManager.Raycast(screenPosition, s_Hits,
+                TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds))
+            return false;
+
+        pose = s_Hits[0].pose;
+        return true;
+    }
+
+    void PlaceInFrontOfCamera(GameObject target)
+    {
+        if (m_Camera == null)
+        {
+            m_Camera = Camera.main;
+            if (m_Camera == null) m_Camera = FindFirstObjectByType<Camera>();
+        }
+
+        if (m_Camera == null) return;
+        target.transform.position = m_Camera.transform.position + m_Camera.transform.forward * 0.75f;
+        target.transform.rotation = FaceUser(Quaternion.identity);
     }
 
     Quaternion FaceUser(Quaternion fallback)
@@ -283,12 +281,11 @@ public class AssignmentController : MonoBehaviour
     {
         if (m_Selected == null) return;
 
-        bool hitPlane = m_RaycastManager != null
-            && m_RaycastManager.Raycast(pos, s_Hits, TrackableType.PlaneWithinPolygon);
+        bool hitPlane = TryRaycastPlane(pos, out Pose pose);
 
         if (hitPlane)
         {
-            m_Selected.transform.position = s_Hits[0].pose.position;
+            m_Selected.transform.position = pose.position;
         }
         else if (m_Camera != null)
         {
@@ -356,16 +353,16 @@ public class AssignmentController : MonoBehaviour
         if (now && !m_WasColliding)
         {
             // 碰撞发生
-            if (m_CubeMaterial != null) m_CubeMaterial.color = kHitColor;
-            if (m_SphereMaterial != null) m_SphereMaterial.color = kHitColor;
-            SetStatus("碰撞检测成功！立方体与球体发生碰撞");
+            SetMaterialColor(m_CubeMaterial, kHitColor);
+            SetMaterialColor(m_SphereMaterial, kHitColor);
+            SetStatus("Collision detected! Both objects are highlighted green.");
         }
         else if (!now && m_WasColliding)
         {
             // 碰撞解除
-            if (m_CubeMaterial != null) m_CubeMaterial.color = kCubeColor;
-            if (m_SphereMaterial != null) m_SphereMaterial.color = kSphereColor;
-            SetStatus("已分离，可再次靠近触发碰撞");
+            SetMaterialColor(m_CubeMaterial, kCubeColor);
+            SetMaterialColor(m_SphereMaterial, kSphereColor);
+            SetStatus("Objects separated. Move them together to detect another collision.");
         }
 
         m_WasColliding = now;
@@ -379,9 +376,9 @@ public class AssignmentController : MonoBehaviour
         m_Dragging = false;
         switch (mode)
         {
-            case AppMode.PlaceCube: SetStatus("放置立方体：轻点屏幕放置"); break;
-            case AppMode.PlaceSphere: SetStatus("放置球体：轻点屏幕放置"); break;
-            case AppMode.Interact: SetStatus("自由交互：拖动移动，双指缩放/旋转"); break;
+            case AppMode.PlaceCube: SetStatus("PLACE CUBE: tap a detected surface."); break;
+            case AppMode.PlaceSphere: SetStatus("PLACE SPHERE: tap a detected surface."); break;
+            case AppMode.Interact: SetStatus("INTERACT: drag to move; pinch/twist to transform."); break;
         }
     }
 
@@ -394,19 +391,14 @@ public class AssignmentController : MonoBehaviour
     // ============ 屏幕 UI ============
     void OnGUI()
     {
-        Font font = GetUIFont();
         float s = Mathf.Clamp(Screen.height / 1200f, 0.75f, 1.6f);
-
-        GUIStyle status = new GUIStyle(GUI.skin.label);
-        if (font != null) status.font = font;
-        status.fontSize = Mathf.RoundToInt(24 * s);
-        status.normal.textColor = Color.white;
+        EnsureGuiStyles(s);
 
         // 顶部状态栏（半透明底）
         GUI.color = new Color(0f, 0f, 0f, 0.5f);
         GUI.DrawTexture(new Rect(0, 0, Screen.width, Mathf.RoundToInt(70 * s)), Texture2D.whiteTexture);
         GUI.color = Color.white;
-        GUI.Label(new Rect(10, 10, Screen.width - 20, Mathf.RoundToInt(50 * s)), m_Status, status);
+        GUI.Label(new Rect(10, 10, Screen.width - 20, Mathf.RoundToInt(50 * s)), m_Status, m_StatusStyle);
 
         // 底部模式按钮
         int bw = Mathf.RoundToInt(190 * s);
@@ -414,24 +406,32 @@ public class AssignmentController : MonoBehaviour
         int gap = Mathf.RoundToInt(12 * s);
         int y = Screen.height - bh - Mathf.RoundToInt(24 * s);
 
-        GUIStyle btn = new GUIStyle(GUI.skin.button);
-        if (font != null) btn.font = font;
-        btn.fontSize = Mathf.RoundToInt(24 * s);
-
         int x = Mathf.RoundToInt(12 * s);
-        DrawModeButton(new Rect(x, y, bw, bh), "放置立方体", AppMode.PlaceCube, btn);
+        DrawModeButton(new Rect(x, y, bw, bh), "PLACE CUBE", AppMode.PlaceCube, m_ButtonStyle);
         x += bw + gap;
-        DrawModeButton(new Rect(x, y, bw, bh), "放置球体", AppMode.PlaceSphere, btn);
+        DrawModeButton(new Rect(x, y, bw, bh), "PLACE SPHERE", AppMode.PlaceSphere, m_ButtonStyle);
         x += bw + gap;
-        DrawModeButton(new Rect(x, y, bw, bh), "自由交互", AppMode.Interact, btn);
+        DrawModeButton(new Rect(x, y, bw, bh), "INTERACT", AppMode.Interact, m_ButtonStyle);
 
         // 当前模式高亮
-        GUIStyle modeLabel = new GUIStyle(GUI.skin.label);
-        if (font != null) modeLabel.font = font;
-        modeLabel.fontSize = Mathf.RoundToInt(20 * s);
-        modeLabel.normal.textColor = Color.yellow;
         GUI.Label(new Rect(Mathf.RoundToInt(12 * s), y - Mathf.RoundToInt(34 * s), Screen.width, Mathf.RoundToInt(28 * s)),
-            "当前模式：" + ModeName(), modeLabel);
+            "MODE: " + ModeName(), m_ModeStyle);
+    }
+
+    void EnsureGuiStyles(float screenScale)
+    {
+        if (m_StatusStyle == null)
+        {
+            m_StatusStyle = new GUIStyle(GUI.skin.label);
+            m_ButtonStyle = new GUIStyle(GUI.skin.button);
+            m_ModeStyle = new GUIStyle(GUI.skin.label);
+            m_StatusStyle.normal.textColor = Color.white;
+            m_ModeStyle.normal.textColor = Color.yellow;
+        }
+
+        m_StatusStyle.fontSize = Mathf.RoundToInt(24 * screenScale);
+        m_ButtonStyle.fontSize = Mathf.RoundToInt(24 * screenScale);
+        m_ModeStyle.fontSize = Mathf.RoundToInt(20 * screenScale);
     }
 
     void DrawModeButton(Rect r, string label, AppMode mode, GUIStyle style)
@@ -446,9 +446,9 @@ public class AssignmentController : MonoBehaviour
     {
         switch (m_Mode)
         {
-            case AppMode.PlaceCube: return "放置立方体";
-            case AppMode.PlaceSphere: return "放置球体";
-            default: return "自由交互";
+            case AppMode.PlaceCube: return "PLACE CUBE";
+            case AppMode.PlaceSphere: return "PLACE SPHERE";
+            default: return "INTERACT";
         }
     }
 }
