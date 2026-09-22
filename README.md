@@ -1,7 +1,3 @@
-# Elysium —《虚拟现实技术》课程作业（AR 交互 + 碰撞检测）
-
-基于 Unity 官方 AR Mobile Template 改写，实现两个作业要求：放置模型并用手势交互；放置两个模型并做碰撞检测。
-
 ## 运行环境
 
 - Unity **6000.3.10f1**（Unity 6）
@@ -25,7 +21,7 @@
 
 ## 文件结构
 
-- `Assets/Scripts/AssignmentController.cs` —— 作业全部逻辑（放置、手势交互、碰撞检测），通过 `[RuntimeInitializeOnLoadMethod]` 运行时自动挂载，无需在场景中手动添加。
+- `Assets/Scripts/AssignmentController.cs` —— 任务全部逻辑（放置、手势交互、碰撞检测），通过 `[RuntimeInitializeOnLoadMethod]` 运行时自动挂载，无需在场景中手动添加。
 - `Assets/Scenes/Assignment.unity` —— 主场景（AR Session + XR Origin (AR Rig) + 方向光 + EventSystem）。
 - `Assets/MobileARTemplateAssets/` —— AR 平面可视化资源（遮挡平面 prefab、材质、着色器）。
 - `Assets/Samples/XR Interaction Toolkit/` —— XR Origin (AR Rig) 等核心 prefab。
