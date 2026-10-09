@@ -71,6 +71,10 @@ public class AssignmentController : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Bootstrap()
     {
+        // 只在 Assignment 场景挂载；Maze 场景由 MazePathfindingController 接管
+        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        if (scene.name == "Maze" || scene.path.EndsWith("/Maze.unity")) return;
+
         if (FindFirstObjectByType<AssignmentController>() != null) return;
 
         var host = new GameObject("Course AR Controller");
